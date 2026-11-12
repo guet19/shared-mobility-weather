@@ -1,0 +1,9 @@
+.venv/
+state/
+collector.pid
+collector.log
+__pycache__/
+.ipynb_checkpoints/
+.DS_Store
+*.db
+data/raw_local/

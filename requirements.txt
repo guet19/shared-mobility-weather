@@ -1,0 +1,14 @@
+# Collector
+requests>=2.32
+shapely>=2.0
+# Analysis (versions aligned with the course environment where possible)
+jupyter
+pandas
+numpy
+matplotlib
+seaborn
+scipy
+statsmodels
+scikit-learn
+folium
+openpyxl
