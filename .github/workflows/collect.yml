@@ -2,9 +2,9 @@
 #
 # GitHub's scheduler is unreliable for short intervals (a */10 cron ran only
 # every 4-5 hours in practice). Therefore one job runs for ~5.5 hours and
-# collects every 10 minutes itself (collector/loop.sh). The hourly cron only
-# has to start the next job; while a job is running, the next one waits in
-# the concurrency queue and starts right after the current one finishes.
+# collects every 10 minutes itself (collector/loop.sh). At the end, each job
+# starts the next one itself; the hourly cron is only a backup. While a job is
+# running, a newly started one waits in the concurrency queue.
 name: collect-shared-mobility
 
 on:
@@ -13,7 +13,8 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: write
+  contents: write   # commit the collected data
+  actions: write    # start the next job (workflow_dispatch)
 
 concurrency:
   group: collector          # never two jobs at the same time (state!)
@@ -52,3 +53,13 @@ jobs:
         with:
           path: state
           key: collector-state-${{ github.run_id }}
+
+      # GitHub's scheduler skipped the hourly cron for hours, so every job
+      # starts its successor itself (workflow_dispatch is allowed with the
+      # GITHUB_TOKEN). The cron above stays as a backup; the concurrency group
+      # makes sure that only one job runs and at most one waits.
+      - name: Start next collection job
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run collect.yml --ref main -R "${{ github.repository }}"
