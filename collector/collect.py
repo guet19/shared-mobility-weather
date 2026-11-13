@@ -4,7 +4,14 @@ Switzerland (GBFS feed of sharedmobility.ch) and stores
 
   availability   number of available vehicles per
                  provider x vehicle_type_id x municipality (BFS number)
+  flows          ID-independent usage per provider x vehicle_type_id x municipality
+                 since the previous snapshot: vehicles departed (ID vanished),
+                 arrived (new ID) and moved (same ID, >= MIN_TRIP_M away).
+                 Most providers (Voi, Velospot, Nextbike, Bolt, Dott, Donkey)
+                 assign a new vehicle ID after every trip (GBFS privacy rule),
+                 so 'n_departed' is the main usage measure for them.
   trips          trips detected by comparing the snapshot with the previous one
+                 (only works for providers with stable IDs, e.g. Lime, Pickebike)
   runs           one log line per run (timestamps, feed age, counts)
 
 Output: data/raw/<kind>/<YYYY-MM-DD>/<kind>_<YYYYMMDDTHHMMSSZ>.csv.gz
@@ -56,6 +63,8 @@ TRIP_FIELDS = ["vehicle_hash", "provider_id", "vehicle_type_id",
                "start_utc_min", "start_utc_max", "end_utc_max",
                "start_lat", "start_lon", "end_lat", "end_lon",
                "start_bfs_nr", "end_bfs_nr", "distance_m", "detection"]
+FLOW_FIELDS = ["snapshot_utc", "prev_snapshot_utc", "gap_s", "provider_id",
+               "vehicle_type_id", "bfs_nr", "n_departed", "n_arrived", "n_moved"]
 PSTAT_FIELDS = ["snapshot_utc", "gap_s", "provider_id", "rotating", "n_prev",
                 "n_seen_again", "n_gone", "n_new", "n_moved"]
 RUN_FIELDS = ["run_utc", "feed_last_updated_utc", "feed_age_s", "n_vehicles",
@@ -232,6 +241,30 @@ def main():
                   [dict(snapshot_utc=iso(feed_ts), gap_s=gap, provider_id=p,
                         rotating=int(p in rotating), **s)
                    for p, s in sorted(stats.items())])
+
+    # ---------------- flows (ID-independent usage per municipality)
+    # departed: counted where the vehicle was last seen; arrived/moved: start
+    # resp. end location. Rotating providers are skipped (every ID is new).
+    flows = {}
+    def flow(v, field):
+        key = (v[4], v[3], v[2])
+        f = flows.setdefault(key, dict(n_departed=0, n_arrived=0, n_moved=0))
+        f[field] += 1
+    if prev_visible:
+        for vid, v in prev_visible.items():
+            if v[4] in rotating:
+                continue
+            if vid not in current:
+                flow(v, "n_departed")
+            elif haversine_m(v[0], v[1], current[vid][0], current[vid][1]) >= MIN_TRIP_M:
+                flow(v, "n_moved")
+        for vid, v in current.items():
+            if vid not in prev_visible and v[4] not in rotating:
+                flow(v, "n_arrived")
+    append_csv_gz(out("flows"), FLOW_FIELDS,
+                  [dict(snapshot_utc=iso(feed_ts), prev_snapshot_utc=iso(prev_ts),
+                        gap_s=gap, provider_id=p, vehicle_type_id=t, bfs_nr=nr, **f)
+                   for (p, t, nr), f in sorted(flows.items(), key=lambda kv: str(kv[0]))])
 
     def trip_row(vid, start, end, t_min, t_max, t_end, detection):
         return dict(vehicle_hash=short_hash(vid), provider_id=start[4],

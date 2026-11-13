@@ -22,16 +22,17 @@ Gruppenprojekt im Modul Data Analytics (ZHAW, 3DA-WIN).
 
 ## Wie „Nutzung" gemessen wird
 
-Die API zeigt nur **freie** Fahrzeuge. Ein Fahrzeug in Benutzung verschwindet aus dem Feed. Der Collector vergleicht jeden Snapshot mit dem vorherigen:
+Die API zeigt nur **freie** Fahrzeuge. Ein Fahrzeug in Benutzung verschwindet aus dem Feed. Der Collector vergleicht jeden Snapshot mit dem vorherigen und speichert zwei Masse:
 
-- Fahrzeug verschwindet und taucht ≥150 m entfernt wieder auf → **Fahrt** (`detection = reappeared`)
-- Fahrzeug ist in beiden Snapshots sichtbar, aber ≥150 m verschoben → **kurze Fahrt** (`moved`)
-- Anbieter, die ihre IDs bei jeder Abfrage neu vergeben (Bird), werden automatisch erkannt und nur in der Verfügbarkeit gezählt.
+1. **Abfahrten (`flows`, Hauptmass):** Anzahl Fahrzeuge pro Anbieter × Fahrzeugtyp × Gemeinde, die seit dem letzten Snapshot verschwunden sind (`n_departed`), neu erschienen sind (`n_arrived`) oder sich mit gleicher ID ≥150 m bewegt haben (`n_moved`). Dieses Mass funktioniert unabhängig von den Fahrzeug-IDs. Das ist wichtig, weil die meisten Anbieter (Voi, Velospot, Nextbike, Bolt, Dott, Donkey) nach jeder Fahrt eine **neue ID** vergeben (Datenschutzregel des GBFS-Standards). Gemessen am 13.11.2026: Bei diesen Anbietern tauchen nur 0–9 % der verschwundenen IDs wieder auf, bei Lime und Pickebike rund 80 %.
+2. **Einzelne Fahrten (`trips`):** nur für Anbieter mit stabilen IDs (v.a. Lime, Pickebike). Verschwindet ein Fahrzeug und taucht es ≥150 m entfernt wieder auf, ist das eine Fahrt (`reappeared`). Ist es in beiden Snapshots sichtbar, aber ≥150 m verschoben, ist es eine kurze Fahrt (`moved`). Daraus lassen sich Distanzen, Start- und Zielorte sowie die Plausibilität der Abfahrten prüfen.
 
-Die Zielvariable der Modelle ist z.B. **Fahrten pro Stunde pro 100 verfügbare Fahrzeuge** (Auslastung) je Stadt × Fahrzeugtyp × Stunde.
+Anbieter, die ihre IDs bei *jeder Abfrage* neu vergeben (Bird), werden automatisch erkannt und nur in der Verfügbarkeit gezählt. `provider_stats` protokolliert pro Lauf und Anbieter, wie viele IDs verschwunden, neu oder verschoben sind. Daraus wird auch die Aktualität des Feeds pro Anbieter beurteilt (Velospot aktualisiert z.B. nur in Schüben).
+
+Die Zielvariable der Modelle ist z.B. **Abfahrten pro Stunde pro 100 verfügbare Fahrzeuge** (Auslastung) je Stadt × Fahrzeugtyp × Stunde.
 
 Bekannte Verzerrungen, die in der Aufbereitung behandelt werden:
-- Umverteilung/Laden durch Betreiber sieht aus wie eine Fahrt → Filter über Geschwindigkeit (>25–30 km/h), Distanz und nächtliche Massenverschiebungen
+- Umverteilung/Laden durch Betreiber sieht aus wie eine Fahrt/Abfahrt → Filter über Geschwindigkeit (>25–30 km/h), Distanz und nächtliche Massenverschiebungen; ein Fahrzeug, das als defekt markiert wird, zählt ebenfalls als Abfahrt
 - Rundfahrten mit Rückgabe am Startort (<150 m) werden nicht erkannt
 - Unregelmässige Abstände zwischen Snapshots → Aggregation auf Stundenebene
 
@@ -43,7 +44,7 @@ collector/
   collect.py           # ein Snapshot (alle 10 Min. ausführen)
 data/
   reference/           # municipalities.geojson, vehicle_types.csv
-  raw/                 # availability/, trips/, runs/  (je eine Datei pro Lauf)
+  raw/                 # availability/, flows/, trips/, provider_stats/, runs/  (je eine Datei pro Lauf)
 .github/workflows/collect.yml   # automatische Sammlung via GitHub Actions
 run_collector_local.sh          # Alternative: Sammlung auf eigenem Rechner
 notebooks/             # (folgt) 01_preparation, 02_database, 03_eda, 04_models
