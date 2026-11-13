@@ -47,7 +47,8 @@ HEADERS = {"User-Agent": "zhaw-data-analytics-student-project/1.0"}
 
 MIN_TRIP_M = 150          # minimum displacement to count as a trip (GPS noise)
 MAX_PENDING_H = 24        # forget vehicles missing longer than this
-ROTATING_ID_SHARE = 0.5   # provider rotates IDs if < 50% of IDs are seen again
+ROTATING_ID_SHARE = 0.2   # provider rotates IDs if < 20% of IDs are seen again ...
+MAX_GAP_FOR_ROTATION_S = 1800  # ... within at most 30 minutes
 
 AVAIL_FIELDS = ["snapshot_utc", "provider_id", "vehicle_type_id", "bfs_nr",
                 "n_available", "n_reserved", "n_disabled"]
@@ -55,6 +56,8 @@ TRIP_FIELDS = ["vehicle_hash", "provider_id", "vehicle_type_id",
                "start_utc_min", "start_utc_max", "end_utc_max",
                "start_lat", "start_lon", "end_lat", "end_lon",
                "start_bfs_nr", "end_bfs_nr", "distance_m", "detection"]
+PSTAT_FIELDS = ["snapshot_utc", "gap_s", "provider_id", "rotating", "n_prev",
+                "n_seen_again", "n_gone", "n_new", "n_moved"]
 RUN_FIELDS = ["run_utc", "feed_last_updated_utc", "feed_age_s", "n_vehicles",
               "n_assigned", "n_trips", "n_pending", "rotating_providers",
               "skipped", "runtime_s"]
@@ -198,17 +201,37 @@ def main():
         current[b["bike_id"]] = [round(b["lat"], 5), round(b["lon"], 5), nr,
                                  b.get("vehicle_type_id") or "", b["provider_id"]]
 
-    # providers that rotate IDs: most of their previous IDs vanished at once
-    rotating = set(state.get("rotating", []))   # sticky once detected
+    # per-provider change statistics (also used to measure feed freshness)
+    stats = {}
+    for vid, v in prev_visible.items():
+        s = stats.setdefault(v[4], dict(n_prev=0, n_seen_again=0, n_gone=0, n_new=0, n_moved=0))
+        s["n_prev"] += 1
+        if vid in current:
+            s["n_seen_again"] += 1
+            if haversine_m(v[0], v[1], current[vid][0], current[vid][1]) >= MIN_TRIP_M:
+                s["n_moved"] += 1
+        else:
+            s["n_gone"] += 1
     if prev_visible:
-        seen, total = {}, {}
-        for vid, v in prev_visible.items():
-            total[v[4]] = total.get(v[4], 0) + 1
-            if vid in current:
-                seen[v[4]] = seen.get(v[4], 0) + 1
-        rotating |= {p for p, n in total.items()
-                     if n >= 5 and seen.get(p, 0) / n < ROTATING_ID_SHARE}
+        for vid, v in current.items():
+            if vid not in prev_visible:
+                stats.setdefault(v[4], dict(n_prev=0, n_seen_again=0, n_gone=0,
+                                            n_new=0, n_moved=0))["n_new"] += 1
+
+    # providers that rotate IDs: (almost) all previous IDs vanish at once.
+    # Only judged on short gaps; after long gaps many vehicles are legitimately
+    # gone (e.g. carvelo2go was wrongly flagged after a 5.5 h gap).
+    gap = feed_ts - prev_ts if prev_ts is not None else None
+    if gap is not None and gap <= MAX_GAP_FOR_ROTATION_S:
+        rotating = {p for p, s in stats.items()
+                    if s["n_prev"] >= 5 and s["n_seen_again"] / s["n_prev"] < ROTATING_ID_SHARE}
+    else:
+        rotating = set(state.get("rotating", []))
     run_row["rotating_providers"] = "|".join(sorted(rotating))
+    append_csv_gz(out("provider_stats"), PSTAT_FIELDS,
+                  [dict(snapshot_utc=iso(feed_ts), gap_s=gap, provider_id=p,
+                        rotating=int(p in rotating), **s)
+                   for p, s in sorted(stats.items())])
 
     def trip_row(vid, start, end, t_min, t_max, t_end, detection):
         return dict(vehicle_hash=short_hash(vid), provider_id=start[4],
@@ -243,8 +266,9 @@ def main():
     append_csv_gz(out("trips"), TRIP_FIELDS, trips)
 
     # ---------------- save state + run log
-    visible = {k: v for k, v in current.items() if v[4] not in rotating}
-    save_state(state_file, {"feed_ts": feed_ts, "visible": visible, "pending": pending,
+    # keep rotating providers in 'visible' so rotation can be re-evaluated next run
+    pending = {k: v for k, v in pending.items() if v[4] not in rotating}
+    save_state(state_file, {"feed_ts": feed_ts, "visible": current, "pending": pending,
                             "rotating": sorted(rotating)})
     run_row.update(n_trips=len(trips), n_pending=len(pending),
                    runtime_s=round(time.time() - t0, 1))
